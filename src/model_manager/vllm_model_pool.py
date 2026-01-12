@@ -6,21 +6,22 @@ from typing import Dict, List, Optional, Any, Union
 from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from vllm.lora.request import LoRARequest
 
+
 class vLLMModelPool:
     def __init__(
-        self,
-        model_name: str,
-        adapter_path: Optional[str] = None,
-        tensor_parallel_size: int = 1,
-        pipeline_parallel_size: int = 1,
-        gpu_memory_utilization: float = 0.9,
-        max_model_len: Optional[int] = None,
-        max_num_seqs: int = 256,
-        trust_remote_code: bool = True,
+            self,
+            model_name: str,
+            adapter_path: Optional[str] = None,
+            tensor_parallel_size: int = 1,
+            pipeline_parallel_size: int = 1,
+            gpu_memory_utilization: float = 0.9,
+            max_model_len: Optional[int] = None,
+            max_num_seqs: int = 256,
+            trust_remote_code: bool = True,
     ):
         self.model_name = model_name
         self.adapter_path = adapter_path
-        
+
         engine_args = AsyncEngineArgs(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
@@ -42,21 +43,21 @@ class vLLMModelPool:
         prompt = payload.get("prompt")
         messages = payload.get("messages")
         sampling_params_dict = payload.get("sampling_params", {})
-        
+
         # Extract common params
         temperature = payload.get("temperature", sampling_params_dict.get("temperature", 0.7))
         top_p = payload.get("top_p", sampling_params_dict.get("top_p", 0.9))
         max_tokens = payload.get("max_tokens", sampling_params_dict.get("max_tokens", 1024))
-        
+
         sampling_params = SamplingParams(
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
             **{k: v for k, v in sampling_params_dict.items() if k not in ["temperature", "top_p", "max_tokens"]}
         )
-        
+
         request_id = os.urandom(8).hex()
-        
+
         try:
             if messages:
                 # Use vLLM's internal chat template support if available, 
@@ -77,20 +78,20 @@ class vLLMModelPool:
                     final_output = request_output
             except asyncio.TimeoutError:
                 return {"error": "Inference timed out (hallucination detection)", "status_code": 504}
-            
+
             if final_output is None:
                 return {"error": "No output generated", "status_code": 500}
 
             text = final_output.outputs[0].text
             prompt_tokens = len(final_output.prompt_token_ids)
             completion_tokens = len(final_output.outputs[0].token_ids)
-            
+
             return {
                 "content": text,
                 "status_code": 200,
                 "prompt_tokens": prompt_tokens,
                 "generation_tokens": completion_tokens,
-                "peak_memory": 0.0 # vLLM pre-allocates, so "peak" is usually constant
+                "peak_memory": 0.0  # vLLM pre-allocates, so "peak" is usually constant
             }
         except Exception as e:
             return {"error": str(e), "status_code": 500}
@@ -105,6 +106,7 @@ class vLLMModelPool:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+
 class vLLMModelPoolRegistry:
     def __init__(self):
         self._pools: Dict[str, vLLMModelPool] = {}
@@ -113,12 +115,17 @@ class vLLMModelPoolRegistry:
         key = model.model_id
         if key in self._pools:
             return self._pools[key]
-        
+
+        import dotenv
+        dotenv.load_dotenv()
+        tensor_parallel_size = int(os.getenv("TENSOR_PARALLEL_SIZE", 1))
+        pipeline_parallel_size = int(os.getenv("PIPELINE_PARALLEL_SIZE", 1))
+
         pool = vLLMModelPool(
             model_name=model.file_path,
             adapter_path=model.adapter_path,
-            tensor_parallel_size=model.tensor_parallel_size,
-            pipeline_parallel_size=model.pipeline_parallel_size,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
             gpu_memory_utilization=model.gpu_memory_utilization,
             max_model_len=model.max_model_len,
             max_num_seqs=model.max_num_seqs,
@@ -133,6 +140,7 @@ class vLLMModelPoolRegistry:
 
     def get_pool(self, model_id: str) -> Optional[vLLMModelPool]:
         return self._pools.get(model_id)
+
 
 # Global registry instance
 registry = vLLMModelPoolRegistry()

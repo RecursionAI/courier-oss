@@ -24,8 +24,6 @@ class CourierModel(BaseModel):
     api_type: str  # flex, static
     weights_gb: float
     instances: int = 1
-    tensor_parallel_size: int = 1
-    pipeline_parallel_size: int = 1
     gpu_memory_utilization: float = 0.9
     max_model_len: int = 16000
     max_num_seqs: int = 2
