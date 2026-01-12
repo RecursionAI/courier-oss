@@ -36,10 +36,6 @@ import threading
 
 load_dotenv()
 
-uc_header = {"Authorization": "uce_asdfawea_94923949"}
-# base_url = "https://launchco.uc.r.appspot.com/api/uce"
-base_url = "https://launchco.uc.r.appspot.com/api/courier"
-uce_key = "uce_asdfawea_94923949"
 
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
