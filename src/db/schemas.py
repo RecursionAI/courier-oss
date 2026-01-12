@@ -27,8 +27,8 @@ class CourierModel(BaseModel):
     tensor_parallel_size: int = 1
     pipeline_parallel_size: int = 1
     gpu_memory_utilization: float = 0.9
-    max_model_len: Optional[int] = None
-    max_num_seqs: int = 256
+    max_model_len: int = 16000
+    max_num_seqs: int = 2
 
 
 class CourierUser(BaseModel):

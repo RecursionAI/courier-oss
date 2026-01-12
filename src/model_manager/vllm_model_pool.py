@@ -63,7 +63,7 @@ class vLLMModelPool:
                 # or handle it via tokenizer if needed. 
                 # AsyncLLMEngine.generate expects prompt or inputs.
                 results_generator = self.engine.generate(
-                    None, sampling_params, request_id, lora_request=self.lora_request, inputs={"messages": messages}
+                    messages, sampling_params, request_id, lora_request=self.lora_request
                 )
             else:
                 results_generator = self.engine.generate(

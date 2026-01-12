@@ -20,10 +20,7 @@ from src.inference.helpers import create_audio_response, create_vision_response,
 from src.inference.models import InferenceRequest, NewModelRequest, NewLibModelRequest, DeleteModelRequest, \
     DeleteLibModelRequest
 from src.inference.text_inference_helpers.helpers import create_text_response
-from src.lora.lora_train import lora_train
-from src.lora.models import LoraRequest, EvalRequest
 from typing import List, Optional
-from src.lora.helpers import evaluate, create_formatted_dataset, delete_dataset
 import asyncio
 from dotenv import load_dotenv
 
@@ -143,12 +140,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.post('/lora/')
-async def lora(request: LoraRequest, api_key: str = Depends(verify_api_key)):
-    await lora_train(request, "")
-    return JSONResponse({"detail": "Training started successfully"}, status_code=200)
 
 
 @app.post('/add-workbench-model/')
@@ -378,62 +369,6 @@ def all_analytics(request: TrendRequest, api_key: str = Depends(verify_admin_key
             status_code=200)
     except Exception as e:
         return JSONResponse({"error": f"Error getting analytics: {e}"}, status_code=500)
-
-
-@app.post('/evaluate/')
-async def eval_request(request: EvalRequest, api_key: str = Depends(verify_api_key)):
-    try:
-        create_formatted_dataset(request.model_name, request.dataset_id, val_size=request.val_size,
-                                 dataset_name=request.dataset_id)
-        loop = asyncio.get_running_loop()
-        from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=1) as pool:
-            response = await loop.run_in_executor(
-                pool,
-                evaluate,
-                request.model_name,
-                request.adapter_path,
-                request.max_seq_length
-            )
-        return response
-    except Exception as e:
-        delete_dataset()
-        return JSONResponse({"error": f"{e}"}, status_code=500)
-    finally:
-        delete_dataset()
-
-
-# @app.post("/update-adapter/")
-# async def update_adapter(request: UpdateAdapterRequest):
-#     try:
-#         model = get_model_helper(models, request.model_name, request.api_key)
-#         model_req = ModelRequest(model_name=request.model_name,
-#                                  context_window=model.context_window, adapter_path=model.adapter_path,
-#                                  api_key=model.api_key)
-#         await delete_model(request=model_req)
-#         new_model_req = NewModelRequest(model_name=model.name,
-#                                         context_window=model.context_window,
-#                                         adapter_path=request.adapter_path, api_key=request.api_key,
-#                                         model_type=model.model_type)
-#         await add_model(request=new_model_req)
-#         return JSONResponse({"detail": "adapter updated successfully"}, status_code=200)
-#     except Exception as e:
-#         return JSONResponse({"error": e}, status_code=500)
-#
-#
-# @app.delete("/delete-adapter-path/")
-# async def delete_adapter_path(dar: DeleteAdapterRequest):
-#     try:
-#         encoded_path = base64.b64encode(dar.adapter_path.encode('utf-8')).decode('utf-8')
-#         response = requests.delete(f"{base_url}/delete-adapter-path/{dar.dataset_id}/{encoded_path}", headers=uc_header)
-#         if response.status_code != 200:
-#             return JSONResponse({"error": f"Error deleting adapter path: {response.json()}"}, status_code=500)
-#         import os
-#         if os.path.exists(dar.adapter_path):
-#             shutil.rmtree(dar.adapter_path)
-#         return JSONResponse({"detail": f"Adapter deleted successfully"}, status_code=200)
-#     except Exception as e:
-#         return JSONResponse({"error": f"Error deleting adapter: {e}"}, status_code=500)
 
 
 @app.get("/check-validity-status/")
