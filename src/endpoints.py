@@ -22,7 +22,7 @@ from src.inference.models import InferenceRequest, NewModelRequest, NewLibModelR
 from src.inference.text_inference_helpers.helpers import create_text_response
 from src.lora.lora_train import lora_train
 from src.lora.models import LoraRequest, EvalRequest
-from typing import List, Optional, Any, Union
+from typing import List, Optional
 from src.lora.helpers import evaluate, create_formatted_dataset, delete_dataset
 import asyncio
 from dotenv import load_dotenv
@@ -31,11 +31,11 @@ from src.model_manager.model_manager import model_manager
 from fastapi import FastAPI, Depends, Security, BackgroundTasks
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-import time
-import threading
 
 load_dotenv()
 
+admin_key = os.getenv("ADMIN_KEY")
+admin_header = {"Authorization": admin_key}
 
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
@@ -49,7 +49,7 @@ courier_users = db.collection("courier_users", CourierUser)
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
-    if api_key == uce_key:
+    if api_key == admin_key:
         return api_key
     valid = api_valid(api_key, courier_users)
     if not valid:
@@ -58,7 +58,7 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
 
 
 async def verify_admin_key(api_key: str = Security(api_key_header)):
-    if api_key != uce_key:
+    if api_key != admin_key:
         raise HTTPException(status_code=401, detail="Invalid Admin API key")
     return api_key
 
@@ -147,7 +147,7 @@ app.add_middleware(
 
 @app.post('/lora/')
 async def lora(request: LoraRequest, api_key: str = Depends(verify_api_key)):
-    await lora_train(request, base_url)
+    await lora_train(request, "")
     return JSONResponse({"detail": "Training started successfully"}, status_code=200)
 
 
@@ -210,7 +210,7 @@ async def remove_workbench_model(request: DeleteModelRequest, api_key: str = Dep
             if mem.api_key == f"{api_key}" and mem.role == "admin":
                 permission = True
 
-        if not permission and api_key != uce_key:
+        if not permission and api_key != admin_key:
             return JSONResponse({"error": "You do not have permission to delete this model"}, status_code=401)
 
         workbench.delete(key=f"{model.id}")
@@ -281,7 +281,7 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
         # Check permissions
         valid_member = any(f"{m.api_key}" == f"{api_key}" for m in model.memberships)
 
-        if not valid_member and api_key != uce_key:
+        if not valid_member and api_key != admin_key:
             return JSONResponse({"error": "You do not have permission to access this model"}, status_code=401)
 
         # Route to appropriate handler based on model type
@@ -535,7 +535,7 @@ async def restore_db(api_key: str = Depends(verify_admin_key)):
 @app.get("/get-memory/")
 def get_memory(api_key: str = Depends(verify_api_key)):
     try:
-        if api_key != uce_key:
+        if api_key != admin_key:
             return JSONResponse({"error": "Invalid API key"}, status_code=401)
 
         from src.inference.helpers import get_memory_stats
@@ -551,4 +551,5 @@ def get_memory(api_key: str = Depends(verify_api_key)):
 
 if __name__ == '__main__':
     uvicorn.run(app, host='0.0.0.0', port=9100)
+    # For local testing
     # uvicorn.run(app, host='127.0.0.1', port=9100)
