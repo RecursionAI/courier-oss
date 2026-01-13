@@ -9,9 +9,12 @@ from typing import Dict, List, Optional, Any, Union, AsyncIterator
 from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from vllm.lora.request import LoRARequest
 
+from src.db.schemas import CourierModel
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("courier.vllm_pool")
+
 
 class vLLMModelPool:
     def __init__(
@@ -21,13 +24,13 @@ class vLLMModelPool:
             tensor_parallel_size: int = 1,
             pipeline_parallel_size: int = 1,
             gpu_memory_utilization: float = 0.9,
-            max_model_len: Optional[int] = None,
-            max_num_seqs: int = 256,
+            max_model_len: int = 6000,
+            max_num_seqs: int = 1,
             trust_remote_code: bool = True,
     ):
         self.model_name = model_name
         self.adapter_path = adapter_path
-        
+
         # Load tokenizer for chat template support
         from transformers import AutoTokenizer
         try:
@@ -43,7 +46,8 @@ class vLLMModelPool:
                 major, _ = torch.cuda.get_device_capability()
                 if major < 8:
                     dtype = "float16"
-                    logger.info(f"Hardware support for bfloat16 not detected (Compute Capability {major}). Falling back to float16.")
+                    logger.info(
+                        f"Hardware support for bfloat16 not detected (Compute Capability {major}). Falling back to float16.")
         except Exception as e:
             logger.warning(f"Warning during hardware detection: {e}")
 
@@ -68,7 +72,7 @@ class vLLMModelPool:
     async def _prepare_params(self, payload: Dict[str, Any]):
         prompt = payload.get("prompt")
         messages = payload.get("messages")
-        
+
         # Defensive parameter parsing
         sampling_params_dict = payload.get("sampling_params") or {}
         if not isinstance(sampling_params_dict, dict):
@@ -93,14 +97,14 @@ class vLLMModelPool:
                 tokenize=False,
                 add_generation_prompt=True
             )
-        
+
         return prompt, sampling_params
 
     async def infer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         request_id = os.urandom(8).hex()
         try:
             prompt, sampling_params = await self._prepare_params(payload)
-            
+
             if not prompt:
                 return {"error": "No prompt or messages provided", "status_code": 400}
 
@@ -154,12 +158,13 @@ class vLLMModelPool:
                     text = request_output.outputs[0].text
                     delta = text[last_pos:]
                     last_pos = len(text)
-                    
+
                     yield json.dumps({
                         "text": delta,
                         "finished": request_output.finished,
                         "prompt_tokens": len(request_output.prompt_token_ids) if request_output.finished else None,
-                        "generation_tokens": len(request_output.outputs[0].token_ids) if request_output.finished else None,
+                        "generation_tokens": len(
+                            request_output.outputs[0].token_ids) if request_output.finished else None,
                     })
         except (asyncio.TimeoutError, TimeoutError):
             logger.error(f"Stream timed out for request {request_id}")
@@ -195,13 +200,12 @@ class vLLMModelPool:
             torch.cuda.empty_cache()
 
 
-
 class vLLMModelPoolRegistry:
     def __init__(self):
         self._pools: Dict[str, vLLMModelPool] = {}
         self._refs: Dict[str, int] = {}
 
-    def _get_key(self, model: Any) -> str:
+    def _get_key(self, model: CourierModel) -> str:
         # Deduplicate based on model path and engine configuration
         import hashlib
         import json
@@ -209,8 +213,8 @@ class vLLMModelPoolRegistry:
             "file_path": model.file_path,
             "adapter_path": model.adapter_path,
             "gpu_memory_utilization": model.gpu_memory_utilization,
-            "max_model_len": model.max_model_len,
-            "max_num_seqs": model.max_num_seqs,
+            "max_model_len": model.context_window,
+            "max_num_seqs": model.instances,
         }
         config_str = json.dumps(config, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()
@@ -243,11 +247,11 @@ class vLLMModelPoolRegistry:
         # We now expect the model object or a similar object with file_path etc.
         # If it's a string, we assume it's an old-style model_id and try to find it (for compatibility if needed)
         if isinstance(model, str):
-             # Fallback: this shouldn't happen after full migration but good for safety
-             key = model 
+            # Fallback: this shouldn't happen after full migration but good for safety
+            key = model
         else:
             key = self._get_key(model)
-            
+
         if key in self._pools:
             self._refs[key] -= 1
             if self._refs[key] <= 0:
