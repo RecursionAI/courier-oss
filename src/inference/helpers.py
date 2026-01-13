@@ -71,13 +71,10 @@ async def create_audio_response(request, model):
         # Use model manager for inference (handles flex/static internally)
         result = await model_manager.inference(model, payload)
 
-        if do_stream:
-            return result
-
         if temp_file and os.path.exists(temp_file):
             os.unlink(temp_file)
 
-        if isinstance(result, dict) and result.get("status_code") == 200:
+        if result.get("status_code") == 200:
             return result
         else:
             return JSONResponse(result, status_code=result.get("status_code", 500))
@@ -153,10 +150,7 @@ async def create_vision_response(request, model):
         # Use model manager for inference (handles flex/static internally)
         result = await model_manager.inference(model, payload)
 
-        if do_stream:
-            return result
-
-        if isinstance(result, dict) and result.get("status_code") == 200:
+        if result.get("status_code") == 200:
             return result
         else:
             return JSONResponse(result, status_code=result.get("status_code", 500))

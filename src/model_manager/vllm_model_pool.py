@@ -186,7 +186,7 @@ class vLLMModelPool:
         try:
             prompt, sampling_params, multi_modal_data = await self._prepare_params(payload)
             if not prompt:
-                yield f"data: {json.dumps({'error': 'No prompt or messages provided', 'status_code': 400})}\n\n"
+                yield json.dumps({"error": "No prompt or messages provided", "status_code": 400})
                 return
 
             results_generator = self.engine.generate(
@@ -196,32 +196,24 @@ class vLLMModelPool:
             )
 
             last_pos = 0
-            prompt_tokens = 0
-            generation_tokens = 0
-            
             async with asyncio.timeout(180.0):
                 async for request_output in results_generator:
                     text = request_output.outputs[0].text
                     delta = text[last_pos:]
                     last_pos = len(text)
                     
-                    if request_output.finished:
-                        prompt_tokens = len(request_output.prompt_token_ids)
-                        generation_tokens = len(request_output.outputs[0].token_ids)
-                    
-                    # Standard SSE format: data: <json>\n\n
-                    yield f"data: {json.dumps({
-                        'text': delta,
-                        'finished': request_output.finished,
-                        'prompt_tokens': prompt_tokens if request_output.finished else None,
-                        'generation_tokens': generation_tokens if request_output.finished else None,
-                    })}\n\n"
+                    yield json.dumps({
+                        "text": delta,
+                        "finished": request_output.finished,
+                        "prompt_tokens": len(request_output.prompt_token_ids) if request_output.finished else None,
+                        "generation_tokens": len(request_output.outputs[0].token_ids) if request_output.finished else None,
+                    })
         except (asyncio.TimeoutError, TimeoutError):
             logger.error(f"Stream timed out for request {request_id}")
-            yield f"data: {json.dumps({'error': 'Inference timed out', 'status_code': 504})}\n\n"
+            yield json.dumps({"error": "Inference timed out", "status_code": 504})
         except Exception as e:
             logger.exception(f"Stream error for request {request_id}: {e}")
-            yield f"data: {json.dumps({'error': str(e), 'status_code': 500})}\n\n"
+            yield json.dumps({"error": str(e), "status_code": 500})
 
     async def check_health(self) -> bool:
         """Ping the engine to check if it's still alive"""
