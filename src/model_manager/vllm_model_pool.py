@@ -111,9 +111,10 @@ class vLLMModelPool:
             final_output = None
             try:
                 # 3-minute timeout for hallucination detection / stall as per instructions
-                async for request_output in asyncio.wait_for(results_generator, timeout=180.0):
-                    final_output = request_output
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(180.0):
+                    async for request_output in results_generator:
+                        final_output = request_output
+            except (asyncio.TimeoutError, TimeoutError):
                 logger.error(f"Inference timed out for request {request_id}")
                 return {"error": "Inference timed out (hallucination detection)", "status_code": 504}
 
@@ -148,18 +149,19 @@ class vLLMModelPool:
             )
 
             last_pos = 0
-            async for request_output in asyncio.wait_for(results_generator, timeout=180.0):
-                text = request_output.outputs[0].text
-                delta = text[last_pos:]
-                last_pos = len(text)
-                
-                yield json.dumps({
-                    "text": delta,
-                    "finished": request_output.finished,
-                    "prompt_tokens": len(request_output.prompt_token_ids) if request_output.finished else None,
-                    "generation_tokens": len(request_output.outputs[0].token_ids) if request_output.finished else None,
-                })
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(180.0):
+                async for request_output in results_generator:
+                    text = request_output.outputs[0].text
+                    delta = text[last_pos:]
+                    last_pos = len(text)
+                    
+                    yield json.dumps({
+                        "text": delta,
+                        "finished": request_output.finished,
+                        "prompt_tokens": len(request_output.prompt_token_ids) if request_output.finished else None,
+                        "generation_tokens": len(request_output.outputs[0].token_ids) if request_output.finished else None,
+                    })
+        except (asyncio.TimeoutError, TimeoutError):
             logger.error(f"Stream timed out for request {request_id}")
             yield json.dumps({"error": "Inference timed out", "status_code": 504})
         except Exception as e:
@@ -173,8 +175,9 @@ class vLLMModelPool:
             sampling_params = SamplingParams(max_tokens=1)
             request_id = "health-check-" + os.urandom(4).hex()
             results_generator = self.engine.generate("ping", sampling_params, request_id)
-            async for _ in asyncio.wait_for(results_generator, timeout=5.0):
-                break
+            async with asyncio.timeout(5.0):
+                async for _ in results_generator:
+                    break
             return True
         except Exception as e:
             logger.error(f"Health check failed for model {self.model_name}: {e}")
