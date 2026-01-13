@@ -307,15 +307,14 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
             return result
         
         # Handle streaming response
-        if request.stream:
-            from fastapi.responses import StreamingResponse
-            return StreamingResponse(result, media_type="text/event-stream")
+        # if request.stream:
+        #     from fastapi.responses import StreamingResponse
+        #     return StreamingResponse(result, media_type="text/event-stream")
 
         # result is expected to be a dict if successful
         end_time = datetime.now()
 
         # result should have 'content', 'prompt_tokens', 'generation_tokens', 'peak_memory'
-        print(f"RESULT: {result}")
         response_content = result.get("content", "")
         # Handle cases where result is wrapped (e.g. from create_text_response)
         if "result" in result and isinstance(result["result"], dict):
