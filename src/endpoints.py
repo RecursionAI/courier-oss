@@ -307,7 +307,7 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
             return result
         
         # Handle streaming response
-        if request.stream or request.streaming:
+        if request.stream:
             from fastapi.responses import StreamingResponse
             return StreamingResponse(result, media_type="text/event-stream")
 
