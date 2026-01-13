@@ -302,7 +302,6 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
             result = await create_vision_response(request, model)
         else:
             result = await create_text_response(request, model)
-        print(f"RESULT1: {result}")
 
         if isinstance(result, JSONResponse):
             return result
@@ -316,7 +315,6 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
         end_time = datetime.now()
 
         # result should have 'content', 'prompt_tokens', 'generation_tokens', 'peak_memory'
-        print(f"RESULT2: {result}")
         response_content = result.get("content", "")
         # Handle cases where result is wrapped (e.g. from create_text_response)
         if "result" in result and isinstance(result["result"], dict):
