@@ -13,6 +13,9 @@ import tempfile
 import subprocess
 import re
 
+import logging
+logger = logging.getLogger("courier.helpers")
+
 async def create_audio_response(request, model):
     """Simplified audio inference using model manager"""
     from src.model_manager.model_manager import model_manager
@@ -107,7 +110,7 @@ async def create_vision_response(request, model):
                             img = Image.open(io.BytesIO(decoded_bytes))
                             images.append(img)
                         except Exception as e:
-                            print(f"Warning: Could not decode/open image: {e}")
+                            logger.warning(f"Warning: Could not decode/open image: {e}")
 
                 video_data = content.get("video")
                 if video_data:
@@ -123,7 +126,7 @@ async def create_vision_response(request, model):
                             video_path = tmp.name
                             temp_video_files.append(video_path)
                     except Exception as e:
-                        print(f"ERROR: Could not process video: {e}")
+                        logger.error(f"ERROR: Could not process video: {e}")
 
             processed_msg = {
                 "role": role,
@@ -149,7 +152,7 @@ async def create_vision_response(request, model):
             return JSONResponse(result, status_code=result.get("status_code", 500))
 
     except Exception as e:
-        print(f"{e}")
+        logger.exception(f"Vision inference error: {e}")
         return JSONResponse({"error": f"Vision inference error: {str(e)}"}, status_code=500)
     finally:
         for vf in temp_video_files:
@@ -191,7 +194,7 @@ def convert_audio_to_mp3(audio_data: bytes) -> Optional[bytes]:
         with open(output_temp, "rb") as f:
             return f.read()
     except Exception as e:
-        print(f"Audio conversion error: {e}")
+        logger.error(f"Audio conversion error: {e}")
         return None
     finally:
         if input_temp and os.path.exists(input_temp):

@@ -87,6 +87,7 @@ class InferenceRequest(BaseModel):
     top_p: float = 0.9
     stop: Optional[List[str]] = None
     sampling_params: Optional[Dict[str, Any]] = None
+    stream: bool = False
 
 
 class ReplaceUserRequest(BaseModel):

@@ -31,6 +31,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("courier.endpoints")
+
 admin_key = os.getenv("ADMIN_KEY")
 admin_header = {"Authorization": admin_key}
 
@@ -87,7 +93,7 @@ async def record_analytics(api_key: str, model_name: str, prompt_tokens: int, ge
 
         analytics_coll.upsert(today_analytics)
     except Exception as e:
-        print(f"Error recording analytics: {e}")
+        logger.error(f"Error recording analytics: {e}")
 
 
 def get_models_from_db() -> Optional[List[CourierModel]]:
@@ -107,7 +113,7 @@ def get_models_from_db() -> Optional[List[CourierModel]]:
         return workbench_models
 
     except Exception as e:
-        print(f"Error fetching models from DB: {e}")
+        logger.error(f"Error fetching models from DB: {e}")
 
 
 async def periodic_cleanup():
@@ -116,19 +122,33 @@ async def periodic_cleanup():
         await asyncio.sleep(60)
 
 
+async def periodic_health_check():
+    while True:
+        await model_manager.monitor_health()
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start periodic cleanup task
+    # Start periodic tasks
     cleanup_task = asyncio.create_task(periodic_cleanup())
+    health_task = asyncio.create_task(periodic_health_check())
+    
     try:
         workbench_models = get_models_from_db()
-        for cm in workbench_models:
-            if cm.api_type == "static":
-                await model_manager.ensure_model_loaded(cm)
+        if workbench_models:
+            for cm in workbench_models:
+                if cm.api_type == "static":
+                    await model_manager.ensure_model_loaded(cm)
     except Exception as e:
-        print(f"Error loading model modules: {e}")
+        logger.error(f"Error loading static models: {e}")
 
     yield
+    
+    # Graceful shutdown
+    cleanup_task.cancel()
+    health_task.cancel()
+    await model_manager.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -285,6 +305,11 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
 
         if isinstance(result, JSONResponse):
             return result
+        
+        # Handle streaming response
+        if request.stream:
+            from fastapi.responses import StreamingResponse
+            return StreamingResponse(result, media_type="text/event-stream")
 
         # result is expected to be a dict if successful
         end_time = datetime.now()
@@ -308,7 +333,7 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
         return JSONResponse({"content": response_content}, status_code=200)
 
     except Exception as e:
-        print(f"Inference error: {str(e)}")
+        logger.exception(f"Inference error: {str(e)}")
         return JSONResponse({"error": f"Inference error: {str(e)}"}, status_code=500)
 
 
