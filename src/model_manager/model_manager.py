@@ -84,11 +84,11 @@ class ModelManager:
             return {"error": "Failed to load model or get pool", "status_code": 500}
 
         try:
-            if payload.get("stream"):
-                return pool.infer_stream(payload)
-            else:
-                result = await pool.infer(payload)
-                return result
+            # if payload.get("stream"):
+            #     return pool.infer_stream(payload)
+            # else:
+            result = await pool.infer(payload)
+            return result
         except Exception as e:
             logger.exception(f"Inference error for model {model.name}: {e}")
             return {"error": f"Inference error: {str(e)}", "status_code": 500}
