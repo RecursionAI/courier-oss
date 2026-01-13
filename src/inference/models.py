@@ -88,6 +88,7 @@ class InferenceRequest(BaseModel):
     stop: Optional[List[str]] = None
     sampling_params: Optional[Dict[str, Any]] = None
     stream: bool = False
+    streaming: bool = False
 
 
 class ReplaceUserRequest(BaseModel):

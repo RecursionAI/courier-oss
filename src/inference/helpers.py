@@ -61,7 +61,9 @@ async def create_audio_response(request, model):
             temp_file = tmp.name
 
         # Build payload for vLLM
+        do_stream = request.stream or request.streaming
         payload = request.model_dump()
+        payload["stream"] = do_stream
         payload["audio_file"] = temp_file
         if system_prompt:
              payload["system_prompt"] = system_prompt
@@ -69,10 +71,13 @@ async def create_audio_response(request, model):
         # Use model manager for inference (handles flex/static internally)
         result = await model_manager.inference(model, payload)
 
+        if do_stream:
+            return result
+
         if temp_file and os.path.exists(temp_file):
             os.unlink(temp_file)
 
-        if result.get("status_code") == 200:
+        if isinstance(result, dict) and result.get("status_code") == 200:
             return result
         else:
             return JSONResponse(result, status_code=result.get("status_code", 500))
@@ -139,14 +144,19 @@ async def create_vision_response(request, model):
         if not processed_messages:
             return JSONResponse({"error": "No messages provided for vision inference"}, status_code=400)
 
+        do_stream = request.stream or request.streaming
         payload = request.model_dump()
+        payload["stream"] = do_stream
         payload["messages"] = processed_messages
         payload["video_num_frames"] = 30
 
         # Use model manager for inference (handles flex/static internally)
         result = await model_manager.inference(model, payload)
 
-        if result.get("status_code") == 200:
+        if do_stream:
+            return result
+
+        if isinstance(result, dict) and result.get("status_code") == 200:
             return result
         else:
             return JSONResponse(result, status_code=result.get("status_code", 500))

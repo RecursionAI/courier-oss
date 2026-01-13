@@ -66,34 +66,49 @@ async def verify_admin_key(api_key: str = Security(api_key_header)):
     return api_key
 
 
+# Global lock for analytics to prevent race conditions during read-modify-write
+analytics_lock = asyncio.Lock()
+
+
 async def record_analytics(api_key: str, model_name: str, prompt_tokens: int, generation_tokens: int,
                            peak_memory: float, start_time: datetime, end_time: datetime):
-    try:
-        analytics_coll = db.collection(f"Analytics-{api_key}", Analytics)
-        active_mem = get_active_mem_gb()
-        active_mem_gb = f"{active_mem:.2f} GB"
+    async with analytics_lock:
+        try:
+            analytics_coll = db.collection(f"Analytics-{api_key}", Analytics)
+            active_mem = get_active_mem_gb()
+            active_mem_gb = f"{active_mem:.2f} GB"
 
-        analytic_request = AnalyticsRequest(
-            model_name=model_name,
-            prompt_tokens=prompt_tokens,
-            generation_tokens=generation_tokens,
-            peak_memory=peak_memory,
-            start_time=str(start_time),
-            end_time=str(end_time),
-            system_active_memory=active_mem_gb
-        )
+            analytic_request = AnalyticsRequest(
+                model_name=model_name,
+                prompt_tokens=prompt_tokens,
+                generation_tokens=generation_tokens,
+                peak_memory=peak_memory,
+                start_time=str(start_time),
+                end_time=str(end_time),
+                system_active_memory=active_mem_gb
+            )
 
-        today = date.today()
-        formatted_date = today.strftime("%m-%d-%Y")
-        today_analytics = analytics_coll.read(key=f"{formatted_date}")
-        if not today_analytics:
-            today_analytics = Analytics(id=f"{formatted_date}", requests=[analytic_request])
-        else:
-            today_analytics.requests.append(analytic_request)
+            today = date.today()
+            formatted_date = today.strftime("%m-%d-%Y")
+            
+            # Retry logic for reading/writing to handle transient DB issues
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    today_analytics = analytics_coll.read(key=f"{formatted_date}")
+                    if not today_analytics:
+                        today_analytics = Analytics(id=f"{formatted_date}", requests=[analytic_request])
+                    else:
+                        today_analytics.requests.append(analytic_request)
 
-        analytics_coll.upsert(today_analytics)
-    except Exception as e:
-        logger.error(f"Error recording analytics: {e}")
+                    analytics_coll.upsert(today_analytics)
+                    break # Success
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise e
+                    await asyncio.sleep(0.1 * (attempt + 1)) # Small backoff
+        except Exception as e:
+            logger.error(f"Error recording analytics: {e}")
 
 
 def get_models_from_db() -> Optional[List[CourierModel]]:
@@ -307,9 +322,34 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
             return result
         
         # Handle streaming response
-        if request.stream:
+        if request.stream or request.streaming:
             from fastapi.responses import StreamingResponse
-            return StreamingResponse(result, media_type="text/event-stream")
+            
+            async def streaming_wrapper():
+                p_tokens = 0
+                g_tokens = 0
+                # We'll use a simplified version for streaming analytics
+                # as getting peak memory during stream is complex
+                
+                async for chunk in result:
+                    yield chunk
+                    # Try to extract tokens if this is the final chunk
+                    if 'data: ' in chunk:
+                        try:
+                            # Parse JSON from SSE format
+                            data_str = chunk.replace('data: ', '').strip()
+                            data = json.loads(data_str)
+                            if data.get('finished'):
+                                p_tokens = data.get('prompt_tokens', 0)
+                                g_tokens = data.get('generation_tokens', 0)
+                        except:
+                            pass
+                
+                # Record analytics after stream finishes
+                end_time_stream = datetime.now()
+                await record_analytics(api_key, model.name, p_tokens, g_tokens, 0.0, start_time, end_time_stream)
+
+            return StreamingResponse(streaming_wrapper(), media_type="text/event-stream")
 
         # result is expected to be a dict if successful
         end_time = datetime.now()

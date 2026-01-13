@@ -43,6 +43,7 @@ class ModelManager:
         self.models: Dict[str, ModelEntry] = {}
         self.loaded_models: List[str] = []
         self.locks: Dict[str, asyncio.Lock] = {}
+        self.last_errors: Dict[str, str] = {}
 
     async def get_model_entry(self, model_name: str) -> Optional[ModelEntry]:
         """Get model entry if exists and not expired"""
@@ -81,7 +82,8 @@ class ModelManager:
         """
         pool = await self.get_pool(model)
         if not pool:
-            return {"error": "Failed to load model or get pool", "status_code": 500}
+            error_msg = self.last_errors.get(model.name, "Failed to load model or get pool")
+            return {"error": error_msg, "status_code": 500}
 
         try:
             if payload.get("stream"):
@@ -131,10 +133,13 @@ class ModelManager:
 
             self.models[model.name] = entry
             self.loaded_models.append(model.name)
+            self.last_errors.pop(model.name, None)
             logger.info(f"Successfully loaded model: {model.name}")
             return entry
         except Exception as e:
-            logger.error(f"Failed to load model {model.name}: {e}")
+            error_msg = str(e)
+            logger.error(f"Failed to load model {model.name}: {error_msg}")
+            self.last_errors[model.name] = error_msg
             return None
 
     async def _load_with_memory_management(self, model: CourierModel, available_gb: float, required_gb: float) -> Optional[ModelEntry]:
@@ -150,10 +155,12 @@ class ModelManager:
             await self._unload_model(model_name)
 
         new_available_gb = self.get_available_memory()
-        if new_available_gb >= required_gb:
+        if new_available_gb >= (required_gb * 1.05): # Use a small buffer
             return await self._load_model(model)
         else:
-            logger.error(f"Insufficient memory after cleanup: {required_gb}GB needed, {new_available_gb}GB available")
+            error_msg = f"Insufficient memory after cleanup: {required_gb}GB needed, {new_available_gb:.2f}GB available"
+            logger.error(error_msg)
+            self.last_errors[model.name] = error_msg
             return None
 
     def _find_models_to_unload(self, required_gb: float, available_gb: float) -> List[str]:

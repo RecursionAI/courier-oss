@@ -5,13 +5,17 @@ from src.model_manager.model_manager import model_manager
 
 # Simplified create_text_response using model manager
 async def create_text_response(request: InferenceRequest, model: CourierModel):
+    # Determine if we should stream (check both stream and streaming for compatibility)
+    do_stream = request.stream or request.streaming
+    
     # Prepare payload for vLLM
     payload = request.model_dump()
+    payload["stream"] = do_stream
     
     # Use model manager for all inference - it handles flex vs static internally
     result = await model_manager.inference(model, payload)
 
-    if request.stream:
+    if do_stream:
         return result
 
     if isinstance(result, dict) and result.get("status_code", 200) >= 400:

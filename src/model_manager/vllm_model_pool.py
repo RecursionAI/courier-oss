@@ -5,6 +5,7 @@ import torch
 import logging
 import hashlib
 import json
+import re
 from typing import Dict, List, Optional, Any, Union, AsyncIterator
 from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from vllm.lora.request import LoRARequest
@@ -39,7 +40,19 @@ class vLLMModelPool:
         # Phase 2.2: Hardware-aware configuration
         dtype = "auto"
         try:
-            if torch.cuda.is_available():
+            # Use nvidia-smi to check compute capability without initializing CUDA
+            import subprocess
+            res = subprocess.run(
+                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                capture_output=True, text=True
+            )
+            if res.returncode == 0:
+                major = int(res.stdout.strip().split('.')[0])
+                if major < 8:
+                    dtype = "float16"
+                    logger.info(f"Hardware support for bfloat16 not detected (Compute Capability {major}). Falling back to float16.")
+            elif torch.cuda.is_available():
+                # Fallback if nvidia-smi is not available
                 major, _ = torch.cuda.get_device_capability()
                 if major < 8:
                     dtype = "float16"
@@ -58,7 +71,26 @@ class vLLMModelPool:
             dtype=dtype,
             enable_lora=bool(adapter_path),
         )
-        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+        
+        try:
+            self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+        except ValueError as e:
+            error_msg = str(e)
+            # Handle the specific case where max_model_len is too large for available VRAM
+            if "estimated maximum model length is" in error_msg:
+                match = re.search(r"estimated maximum model length is (\d+)", error_msg)
+                if match:
+                    suggested_len = int(match.group(1))
+                    logger.warning(
+                        f"Model {model_name} failed to load with max_model_len={max_model_len or 'auto'}. "
+                        f"Retrying with suggested max_model_len={suggested_len} based on available VRAM."
+                    )
+                    engine_args.max_model_len = suggested_len
+                    self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+                else:
+                    raise e
+            else:
+                raise e
         self.lora_request = None
         if adapter_path:
             # We use a hash of the adapter path as a simple ID
@@ -86,6 +118,7 @@ class vLLMModelPool:
             **{k: v for k, v in sampling_params_dict.items() if k not in ["temperature", "top_p", "max_tokens"]}
         )
 
+        multi_modal_data = None
         if messages:
             # Use chat template to format messages into a prompt string
             prompt = self.tokenizer.apply_chat_template(
@@ -93,19 +126,31 @@ class vLLMModelPool:
                 tokenize=False,
                 add_generation_prompt=True
             )
+            
+            # Phase 3: Multi-modal support (Vision)
+            images = []
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("images"):
+                    images.extend(msg["images"])
+            
+            if images:
+                # vLLM expects multi_modal_data for vision models
+                multi_modal_data = {"image": images}
         
-        return prompt, sampling_params
+        return prompt, sampling_params, multi_modal_data
 
     async def infer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         request_id = os.urandom(8).hex()
         try:
-            prompt, sampling_params = await self._prepare_params(payload)
+            prompt, sampling_params, multi_modal_data = await self._prepare_params(payload)
             
             if not prompt:
                 return {"error": "No prompt or messages provided", "status_code": 400}
 
             results_generator = self.engine.generate(
-                prompt, sampling_params, request_id, lora_request=self.lora_request
+                prompt, sampling_params, request_id, 
+                lora_request=self.lora_request,
+                multi_modal_data=multi_modal_data
             )
 
             final_output = None
@@ -139,34 +184,44 @@ class vLLMModelPool:
     async def infer_stream(self, payload: Dict[str, Any]) -> AsyncIterator[str]:
         request_id = os.urandom(8).hex()
         try:
-            prompt, sampling_params = await self._prepare_params(payload)
+            prompt, sampling_params, multi_modal_data = await self._prepare_params(payload)
             if not prompt:
-                yield json.dumps({"error": "No prompt or messages provided", "status_code": 400})
+                yield f"data: {json.dumps({'error': 'No prompt or messages provided', 'status_code': 400})}\n\n"
                 return
 
             results_generator = self.engine.generate(
-                prompt, sampling_params, request_id, lora_request=self.lora_request
+                prompt, sampling_params, request_id, 
+                lora_request=self.lora_request,
+                multi_modal_data=multi_modal_data
             )
 
             last_pos = 0
+            prompt_tokens = 0
+            generation_tokens = 0
+            
             async with asyncio.timeout(180.0):
                 async for request_output in results_generator:
                     text = request_output.outputs[0].text
                     delta = text[last_pos:]
                     last_pos = len(text)
                     
-                    yield json.dumps({
-                        "text": delta,
-                        "finished": request_output.finished,
-                        "prompt_tokens": len(request_output.prompt_token_ids) if request_output.finished else None,
-                        "generation_tokens": len(request_output.outputs[0].token_ids) if request_output.finished else None,
-                    })
+                    if request_output.finished:
+                        prompt_tokens = len(request_output.prompt_token_ids)
+                        generation_tokens = len(request_output.outputs[0].token_ids)
+                    
+                    # Standard SSE format: data: <json>\n\n
+                    yield f"data: {json.dumps({
+                        'text': delta,
+                        'finished': request_output.finished,
+                        'prompt_tokens': prompt_tokens if request_output.finished else None,
+                        'generation_tokens': generation_tokens if request_output.finished else None,
+                    })}\n\n"
         except (asyncio.TimeoutError, TimeoutError):
             logger.error(f"Stream timed out for request {request_id}")
-            yield json.dumps({"error": "Inference timed out", "status_code": 504})
+            yield f"data: {json.dumps({'error': 'Inference timed out', 'status_code': 504})}\n\n"
         except Exception as e:
             logger.exception(f"Stream error for request {request_id}: {e}")
-            yield json.dumps({"error": str(e), "status_code": 500})
+            yield f"data: {json.dumps({'error': str(e), 'status_code': 500})}\n\n"
 
     async def check_health(self) -> bool:
         """Ping the engine to check if it's still alive"""
