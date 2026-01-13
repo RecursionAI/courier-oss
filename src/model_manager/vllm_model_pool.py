@@ -219,7 +219,7 @@ class vLLMModelPoolRegistry:
         config_str = json.dumps(config, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()
 
-    def ensure_pool(self, model: Any) -> vLLMModelPool:
+    def ensure_pool(self, model: CourierModel) -> vLLMModelPool:
         key = self._get_key(model)
         if key in self._pools:
             self._refs[key] += 1
@@ -236,8 +236,8 @@ class vLLMModelPoolRegistry:
             tensor_parallel_size=tensor_parallel_size,
             pipeline_parallel_size=pipeline_parallel_size,
             gpu_memory_utilization=model.gpu_memory_utilization,
-            max_model_len=model.max_model_len,
-            max_num_seqs=model.max_num_seqs,
+            max_model_len=model.context_window,
+            max_num_seqs=model.instances,
         )
         self._pools[key] = pool
         self._refs[key] = 1
