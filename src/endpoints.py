@@ -354,10 +354,10 @@ def get_today_analytics(api_key: str = Depends(verify_api_key)):
 
 
 @app.get('/trend-analytics/')
-def get_trend_analytics(request: TrendRequest, api_key: str = Depends(verify_api_key)):
+def get_trend_analytics(limit=7, skip=0, api_key: str = Depends(verify_api_key)):
     try:
         analytics_coll = db.collection(f"Analytics-{api_key}", Analytics)
-        trend_analytics = analytics_coll.list(limit=request.limit, skip=request.skip)
+        trend_analytics = analytics_coll.list(limit=limit, skip=skip)
         total_entries = 0
         for ta in trend_analytics:
             total_entries += len(ta.requests)
@@ -368,7 +368,7 @@ def get_trend_analytics(request: TrendRequest, api_key: str = Depends(verify_api
 
 
 @app.get('/all-analytics/')
-def all_analytics(request: TrendRequest, api_key: str = Depends(verify_admin_key)):
+def all_analytics(limit=7, skip=0, api_key: str = Depends(verify_admin_key)):
     try:
         responses = []
         total_entries = 0
@@ -376,7 +376,7 @@ def all_analytics(request: TrendRequest, api_key: str = Depends(verify_admin_key
         for collection in db.list_collections():
             if collection.startswith("Analytics-"):
                 analytics = db.collection(collection, Analytics)
-                trend_analytics = analytics.list(limit=request.limit, skip=request.skip)
+                trend_analytics = analytics.list(limit=limit, skip=skip)
                 total_requests = 0
                 total_models = 0
                 for ta in trend_analytics:
