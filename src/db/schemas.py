@@ -1,3 +1,5 @@
+# Pydantic models for data validation and FlowDB persistence.
+
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Any
 
@@ -8,6 +10,10 @@ class CourierMembership(BaseModel):
     role: str
 
 
+# `CourierModel`: Defines the configuration for a model, including its file path, 
+# VRAM requirements (`weights_gb`), and `api_type`.
+# - "static": Models that stay in memory permanently.
+# - "flex": Models that are subject to the TTL/LRU unloading logic.
 class CourierModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     id: str
@@ -25,8 +31,7 @@ class CourierModel(BaseModel):
     weights_gb: float
     instances: int = 1
     gpu_memory_utilization: float = 0.9
-    max_model_len: int = 16000
-    max_num_seqs: int = 2
+    max_num_seqs: int = 1
 
 
 class CourierUser(BaseModel):

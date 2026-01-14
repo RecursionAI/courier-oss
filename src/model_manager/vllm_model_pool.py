@@ -1,3 +1,5 @@
+# This module wraps the vLLM AsyncLLMEngine to provide high-performance inference.
+
 import asyncio
 import os
 import gc
@@ -39,6 +41,9 @@ class vLLMModelPool:
             logger.error(f"Failed to load tokenizer for {model_name}: {e}")
             raise e
 
+        # 1. HARDWARE AUTO-DETECTION:
+        # During initialization, the pool checks the GPU's Compute Capability.
+        # It automatically falls back to `float16` if `bfloat16` isn't supported by the hardware.
         # Phase 2.2: Hardware-aware configuration
         dtype = "auto"
         try:
@@ -63,6 +68,9 @@ class vLLMModelPool:
             enable_lora=bool(adapter_path),
         )
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+        # 2. LORA INTEGRATION:
+        # If an `adapter_path` is provided, the pool configures vLLM to use LoRA.
+        # Adapters are identified by a hash of their path for efficient deduplication.
         self.lora_request = None
         if adapter_path:
             # We use a hash of the adapter path as a simple ID
@@ -100,6 +108,9 @@ class vLLMModelPool:
 
         return prompt, sampling_params
 
+    # 3. STREAMING & TIMEOUTS:
+    # `infer` and `infer_stream` include a 3-minute watchdog timer 
+    # to detect and recover from potential model stalls or "infinite" hallucinations.
     async def infer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         request_id = os.urandom(8).hex()
         try:
@@ -200,6 +211,9 @@ class vLLMModelPool:
             torch.cuda.empty_cache()
 
 
+# 4. REGISTRY PATTERN:
+# The `vLLMModelPoolRegistry` ensures that if multiple users request 
+# the same model config, they share the same underlying engine instance (Ref Counting).
 class vLLMModelPoolRegistry:
     def __init__(self):
         self._pools: Dict[str, vLLMModelPool] = {}

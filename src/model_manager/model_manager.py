@@ -1,3 +1,5 @@
+# The ModelManager class orchestrates the lifecycle of LLMs in memory.
+
 import time
 import asyncio
 import gc
@@ -14,6 +16,9 @@ logger = logging.getLogger("courier.model_manager")
 
 T = TypeVar("T")
 
+# 1. MODEL ENTRIES:
+# Each loaded model is tracked as a `ModelEntry` which stores its loading time,
+# last used time, and the vLLM engine pool.
 @dataclass
 class ModelEntry:
     """Tracks model state and memory usage"""
@@ -26,6 +31,9 @@ class ModelEntry:
     pool: vLLMModelPool
     api_type: str = "flex"
 
+    # 2. TTL (Time-To-Live):
+    # "Flex" models have a 5-minute inactivity timeout. If not used, they are 
+    # automatically unloaded to make room for other requests.
     @property
     def is_expired(self) -> bool:
         """Check if model should be unloaded (5-minute TTL)"""
@@ -137,6 +145,10 @@ class ModelManager:
             logger.error(f"Failed to load model {model.name}: {e}")
             return None
 
+    # 3. MEMORY MANAGEMENT (The LRU Policy):
+    # `_load_with_memory_management` is called when VRAM is tight.
+    # It identifies the least recently used "Flex" models and unloads them 
+    # until there is enough space (with a 10% buffer) to load the requested model.
     async def _load_with_memory_management(self, model: CourierModel, available_gb: float, required_gb: float) -> Optional[ModelEntry]:
         """Handle memory management when OOM would occur"""
         models_to_unload = self._find_models_to_unload(required_gb, available_gb)
@@ -191,6 +203,9 @@ class ModelManager:
                 torch.cuda.empty_cache()
             logger.info(f"Unloaded model: {model_name}")
 
+    # 4. CUDA SAFETY:
+    # `get_available_memory` uses `nvidia-smi` directly where possible
+    # to avoid premature CUDA initialization, which can cause issues in multi-process environments.
     def get_available_memory(self) -> float:
         """Get available memory in GB"""
         # Phase 2.2: CUDA Initialization Safety - Use nvidia-smi if available to avoid early CUDA init

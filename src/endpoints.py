@@ -1,3 +1,6 @@
+# This file serves as the main entry point for the FastAPI application.
+# It defines the RESTful interface for model management, inference, and analytics.
+
 import os
 import uuid
 import json
@@ -49,6 +52,9 @@ workbench = db.collection("workbench", CourierModel)
 courier_users = db.collection("courier_users", CourierUser)
 
 
+# 2. SECURITY:
+# `verify_api_key` and `verify_admin_key` provide multi-tenant security, 
+# ensuring users can only access their authorized models.
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
@@ -116,6 +122,9 @@ def get_models_from_db() -> Optional[List[CourierModel]]:
         logger.error(f"Error fetching models from DB: {e}")
 
 
+# 4. BACKGROUND TASKS:
+# `periodic_cleanup` and `periodic_health_check` run in the background 
+# to ensure the system remains stable and does not leak memory.
 async def periodic_cleanup():
     while True:
         await model_manager.cleanup_expired_models()
@@ -128,6 +137,9 @@ async def periodic_health_check():
         await asyncio.sleep(30)
 
 
+# 1. LIFESPAN MANAGEMENT: 
+# The `lifespan` function handles startup (initializing DB, starting background monitors)
+# and graceful shutdown (cleaning up loaded models to free VRAM).
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start periodic tasks
@@ -273,6 +285,10 @@ def get_lib_models(api_key: str = Depends(verify_api_key)):
         return JSONResponse({"error": f"Error getting models: {e}"}, status_code=500)
 
 
+# 3. INFERENCE LOGIC:
+# The `inference` endpoint is the heart of the service. 
+# It determines the model type (text, vision, audio), ensures the model is loaded 
+# via the ModelManager, and records detailed token usage analytics.
 @app.post('/inference/')
 async def inference(request: InferenceRequest, background_tasks: BackgroundTasks,
                     api_key: str = Depends(verify_api_key)):
