@@ -35,7 +35,7 @@ def calculate_gpu_utilization(
     """
     # 1. Estimate KV Cache size (Rule of thumb: 1GB per 10k tokens for ~7B models)
     # Heuristic: ~200MB per 1024 tokens.
-    kv_cache_gb = (max_model_len / 1024) * 0.2
+    kv_cache_gb = (max_model_len / 1024) * 0.3
 
     # 2. Total required memory
     total_needed_gb = model_weight_gb + kv_cache_gb + buffer_gb
