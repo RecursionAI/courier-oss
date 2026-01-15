@@ -18,6 +18,37 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("courier.vllm_pool")
 
 
+def calculate_gpu_utilization(
+        max_model_len: int,
+        available_vram_gb: float,
+        model_weight_gb: float,
+        buffer_gb: float = 1.0
+) -> float:
+    """
+    Calculates the optimal gpu_memory_utilization based on model size and context window.
+
+    Args:
+        max_model_len: Requested context window.
+        available_vram_gb: Total VRAM available on the device.
+        model_weight_gb: Estimated size of model weights in GB.
+        buffer_gb: Safety buffer in GB for overhead/activations.
+    """
+    # 1. Estimate KV Cache size (Rule of thumb: 1GB per 10k tokens for ~7B models)
+    # Heuristic: ~200MB per 1024 tokens.
+    kv_cache_gb = (max_model_len / 1024) * 0.2
+
+    # 2. Total required memory
+    total_needed_gb = model_weight_gb + kv_cache_gb + buffer_gb
+
+    # 3. Calculate utilization ratio relative to total VRAM
+    utilization = total_needed_gb / available_vram_gb
+
+    # Constraints:
+    # Minimum 0.1 to avoid errors,
+    # Maximum 0.95 to leave room for the OS/system.
+    return max(0.1, min(0.95, utilization))
+
+
 class vLLMModelPool:
     def __init__(
             self,
@@ -25,10 +56,10 @@ class vLLMModelPool:
             adapter_path: Optional[str] = None,
             tensor_parallel_size: int = 1,
             pipeline_parallel_size: int = 1,
-            gpu_memory_utilization: float = 0.9,
             max_model_len: int = 6000,
             max_num_seqs: int = 1,
             trust_remote_code: bool = True,
+            model_weight_gb: float = 4.0,
     ):
         self.model_name = model_name
         self.adapter_path = adapter_path
@@ -56,11 +87,30 @@ class vLLMModelPool:
         except Exception as e:
             logger.warning(f"Warning during hardware detection: {e}")
 
+        # Calculate dynamic GPU utilization
+        if torch.cuda.is_available():
+            try:
+                _, total_mem = torch.cuda.mem_get_info()
+                total_mem_gb = total_mem / (1024 ** 3)
+            except Exception as e:
+                logger.warning(f"Failed to get GPU memory info: {e}. Falling back to 16GB.")
+                total_mem_gb = 16.0
+        else:
+            total_mem_gb = 16.0
+
+        dynamic_utilization = calculate_gpu_utilization(
+            max_model_len=max_model_len,
+            available_vram_gb=total_mem_gb,
+            model_weight_gb=model_weight_gb
+        )
+        logger.info(f"Dynamic GPU utilization for {model_name} calculated: {dynamic_utilization:.4f} "
+                    f"(Weights: {model_weight_gb}GB, Context: {max_model_len})")
+
         engine_args = AsyncEngineArgs(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
             pipeline_parallel_size=pipeline_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
+            gpu_memory_utilization=dynamic_utilization,
             max_model_len=max_model_len,
             max_num_seqs=max_num_seqs,
             trust_remote_code=trust_remote_code,
@@ -226,7 +276,7 @@ class vLLMModelPoolRegistry:
         config = {
             "file_path": model.file_path,
             "adapter_path": model.adapter_path,
-            "gpu_memory_utilization": model.gpu_memory_utilization,
+            "weights_gb": model.weights_gb,
             "max_model_len": model.context_window,
             "max_num_seqs": model.instances,
         }
@@ -249,9 +299,9 @@ class vLLMModelPoolRegistry:
             adapter_path=model.adapter_path,
             tensor_parallel_size=tensor_parallel_size,
             pipeline_parallel_size=pipeline_parallel_size,
-            gpu_memory_utilization=model.gpu_memory_utilization,
             max_model_len=model.context_window,
             max_num_seqs=model.instances,
+            model_weight_gb=model.weights_gb,
         )
         self._pools[key] = pool
         self._refs[key] = 1
