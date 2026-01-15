@@ -48,6 +48,7 @@ def calculate_gpu_utilization(
     # Maximum 0.95 to leave room for the OS/system.
     util = max(0.1, min(0.95, utilization))
     print(f"max_memory_utilization: {util}")
+    print("=" * 20)
     return util
 
 
