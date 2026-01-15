@@ -22,7 +22,8 @@ def calculate_gpu_utilization(
         max_model_len: int,
         available_vram_gb: float,
         model_weight_gb: float,
-        buffer_gb: float = 1.0
+        buffer_gb: float = 2.0,
+        model_name: Optional[str] = None
 ) -> float:
     """
     Calculates the optimal gpu_memory_utilization based on model size and context window.
@@ -32,23 +33,38 @@ def calculate_gpu_utilization(
         available_vram_gb: Total VRAM available on the device.
         model_weight_gb: Estimated size of model weights in GB.
         buffer_gb: Safety buffer in GB for overhead/activations.
+        model_name: Optional name of the model for specific heuristics.
     """
-    # 1. Estimate KV Cache size (Rule of thumb: 1GB per 10k tokens for ~7B models)
-    # Heuristic: ~200MB per 1024 tokens.
-    kv_cache_gb = (max_model_len / 1024) * 0.3
+    # 1. Estimate KV Cache size
+    # Base heuristic: ~200-300MB per 1024 tokens for 7B models.
+    # For smaller models (e.g. 2B), the head count/dim might be different, but 0.3GB/1k is a safe upper bound.
+    kv_cache_gb = (max_model_len / 1024) * 0.4  # Slightly increased safety
 
-    # 2. Total required memory
+    # 2. Adjust for Vision-Language models
+    # VL models often need more buffer for visual encoder activations.
+    is_vl = False
+    if model_name:
+        name_lower = model_name.lower()
+        if "vl" in name_lower or "vision" in name_lower:
+            is_vl = True
+
+    if is_vl:
+        buffer_gb += 1.5  # Additional buffer for VL activations (e.g. Qwen2-VL)
+        kv_cache_gb *= 1.2 # VL models might use more KV cache per token or have overhead
+
+    # 3. Total required memory
     total_needed_gb = model_weight_gb + kv_cache_gb + buffer_gb
 
-    # 3. Calculate utilization ratio relative to total VRAM
+    # 4. Calculate utilization ratio relative to total VRAM
     utilization = total_needed_gb / available_vram_gb
 
     # Constraints:
     # Minimum 0.1 to avoid errors,
     # Maximum 0.95 to leave room for the OS/system.
     util = max(0.1, min(0.95, utilization))
-    print(f"max_memory_utilization: {util}")
-    print("=" * 20)
+    logger.info(f"GPU Utilization calculation: model_weight={model_weight_gb}GB, "
+                f"kv_cache={kv_cache_gb:.2f}GB, buffer={buffer_gb}GB, "
+                f"total={total_needed_gb:.2f}GB, vram={available_vram_gb}GB, util={util:.4f}")
     return util
 
 
@@ -104,7 +120,8 @@ class vLLMModelPool:
         dynamic_utilization = calculate_gpu_utilization(
             max_model_len=max_model_len,
             available_vram_gb=total_mem_gb,
-            model_weight_gb=model_weight_gb
+            model_weight_gb=model_weight_gb,
+            model_name=model_name
         )
         logger.info(f"Dynamic GPU utilization for {model_name} calculated: {dynamic_utilization:.4f} "
                     f"(Weights: {model_weight_gb}GB, Context: {max_model_len})")
