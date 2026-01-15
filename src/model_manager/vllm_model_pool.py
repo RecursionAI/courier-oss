@@ -46,7 +46,9 @@ def calculate_gpu_utilization(
     # Constraints:
     # Minimum 0.1 to avoid errors,
     # Maximum 0.95 to leave room for the OS/system.
-    return max(0.1, min(0.95, utilization))
+    util = max(0.1, min(0.95, utilization))
+    print(f"max_memory_utilization: {util}")
+    return util
 
 
 class vLLMModelPool:
