@@ -436,7 +436,9 @@ def register_credential(request: CourierUser, api_key: str = Depends(verify_admi
             courier_users.upsert(user)
             return JSONResponse({"detail": "Credential registered successfully"}, status_code=201)
         else:
-            return JSONResponse({"error": "Credential already registered"}, status_code=400)
+            user.valid = request.valid
+            courier_users.upsert(user)
+            return JSONResponse({"error": "Credential updated"}, status_code=200)
     except Exception as e:
         return JSONResponse({"error": f"Error adding user: {e}"}, status_code=500)
 
