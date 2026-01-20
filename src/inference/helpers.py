@@ -204,7 +204,7 @@ def convert_audio_to_mp3(audio_data: bytes) -> Optional[bytes]:
 
 
 def api_valid(api_key, courier_users) -> bool:
-    valid_key = courier_users.read(key=f"{api_key}")
+    valid_key = courier_users.read(id=f"{api_key}")
     print(valid_key)
     if valid_key is not None:
         return valid_key.valid
