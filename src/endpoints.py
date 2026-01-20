@@ -56,12 +56,15 @@ courier_users = db.collection("courier_users", CourierUser)
 # `verify_api_key` and `verify_admin_key` provide multi-tenant security, 
 # ensuring users can only access their authorized models.
 async def verify_api_key(api_key: str = Security(api_key_header)):
+    print(api_key)
     if not api_key:
+        print("no key")
         raise HTTPException(status_code=401, detail="Missing API key")
     if api_key == admin_key:
         return api_key
     valid = api_valid(api_key, courier_users)
     if not valid:
+        print("invalid key")
         raise HTTPException(status_code=401, detail="Invalid API key")
     return api_key
 
