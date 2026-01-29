@@ -4,13 +4,14 @@
 import os
 import uuid
 import json
+import time
 from datetime import datetime
 
 from fastapi import HTTPException
 
 import uvicorn
 
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
 from datetime import date
@@ -22,8 +23,11 @@ from src.db.schemas import CourierModel, CourierUser, CourierMembership, Analyti
 from src.inference.helpers import create_audio_response, create_vision_response, api_valid, get_active_mem_gb
 from src.inference.models import InferenceRequest, NewModelRequest, NewLibModelRequest, DeleteModelRequest, \
     DeleteLibModelRequest
+from src.inference.openai_models import ChatCompletionRequest, ChatCompletionResponse, \
+    ChatCompletionResponseChoice, ChatCompletionMessage, ChatCompletionStreamResponse, \
+    ChatCompletionStreamResponseChoice, ChatCompletionStreamResponseDelta, UsageInfo, OpenAIModel, ModelListResponse
 from src.inference.text_inference_helpers.helpers import create_text_response
-from typing import List, Optional
+from typing import List, Optional, Union
 import asyncio
 from dotenv import load_dotenv
 
@@ -58,6 +62,11 @@ courier_users = db.collection("courier_users", CourierUser)
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
+
+    # Handle Bearer prefix
+    if api_key.startswith("Bearer "):
+        api_key = api_key[7:]
+
     if api_key == admin_key:
         return api_key
     valid = api_valid(api_key, courier_users)
@@ -145,7 +154,7 @@ async def lifespan(app: FastAPI):
     # Start periodic tasks
     cleanup_task = asyncio.create_task(periodic_cleanup())
     health_task = asyncio.create_task(periodic_health_check())
-    
+
     try:
         workbench_models = get_models_from_db()
         if workbench_models:
@@ -156,7 +165,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error loading static models: {e}")
 
     yield
-    
+
     # Graceful shutdown
     cleanup_task.cancel()
     health_task.cancel()
@@ -285,7 +294,195 @@ def get_lib_models(api_key: str = Depends(verify_api_key)):
         return JSONResponse({"error": f"Error getting models: {e}"}, status_code=500)
 
 
-# 3. INFERENCE LOGIC:
+# 3. OPENAI COMPATIBILITY HELPERS:
+def resolve_model(model_name: str, api_key: str) -> Optional[CourierModel]:
+    """Resolve a model name/ID to a CourierModel object, checking permissions."""
+    # 1. Search workbench models by name, nickname, or ID
+    models_for_user: List[CourierModel] = []
+    workbench_models = get_models_from_db()
+
+    for wm in workbench_models:
+        for mem in wm.memberships:
+            if f"{mem.api_key}" == f"{api_key}":
+                models_for_user.append(wm)
+
+    for mfu in models_for_user:
+        if mfu.nickname == model_name or mfu.name == model_name:
+            return mfu
+
+    return None
+
+
+async def openai_stream_generator(model, payload, api_key, background_tasks, start_time):
+    """Generator for OpenAI-compatible Server-Sent Events (SSE)."""
+    stream_id = f"chatcmpl-{uuid.uuid4()}"
+    created = int(time.time())
+
+    # Use model manager to get the stream
+    stream_iter = await model_manager.inference(model, payload)
+
+    if isinstance(stream_iter, dict) and "error" in stream_iter:
+        yield f"data: {json.dumps(stream_iter)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    prompt_tokens = 0
+    generation_tokens = 0
+    first_chunk = True
+
+    async for chunk_json in stream_iter:
+        chunk = json.loads(chunk_json)
+
+        if "error" in chunk:
+            yield f"data: {chunk_json}\n\n"
+            continue
+
+        delta_text = chunk.get("text", "")
+        finished = chunk.get("finished", False)
+
+        if finished:
+            prompt_tokens = chunk.get("prompt_tokens", 0)
+            generation_tokens = chunk.get("generation_tokens", 0)
+            finish_reason = "stop"
+            delta = ChatCompletionStreamResponseDelta()
+        else:
+            finish_reason = None
+            delta = ChatCompletionStreamResponseDelta(content=delta_text)
+            if first_chunk:
+                delta.role = "assistant"
+                first_chunk = False
+
+        response_chunk = ChatCompletionStreamResponse(
+            id=stream_id,
+            created=created,
+            model=model.name,
+            choices=[
+                ChatCompletionStreamResponseChoice(
+                    index=0,
+                    delta=delta,
+                    finish_reason=finish_reason
+                )
+            ]
+        )
+
+        yield f"data: {response_chunk.model_dump_json()}\n\n"
+
+    # Record analytics after stream finishes
+    end_time = datetime.now()
+    background_tasks.add_task(
+        record_analytics, api_key, model.name, prompt_tokens, generation_tokens, 0.0, start_time, end_time
+    )
+
+    yield "data: [DONE]\n\n"
+
+
+# 4. OPENAI COMPATIBLE ENDPOINTS:
+@app.get("/v1/models", response_model=ModelListResponse)
+async def list_models(api_key: str = Depends(verify_api_key)):
+    """List available models in OpenAI format."""
+    try:
+        # Get all models from workbench and library
+        workbench_models = get_models_from_db() or []
+        library_models = library.list(limit=100) or []
+
+        # Filter models user has access to (if not admin)
+        available_models = []
+        if api_key == admin_key:
+            available_models = workbench_models + library_models
+        else:
+            # Check workbench models for membership
+            for model in workbench_models:
+                if any(m.api_key == api_key for m in model.memberships):
+                    available_models.append(model)
+            # library models are generally available
+            available_models += library_models
+
+        # Format as OpenAI models
+        openai_models = []
+        # Use set to avoid duplicates by name
+        seen_names = set()
+        for m in available_models:
+            if m.name not in seen_names:
+                openai_models.append(OpenAIModel(id=m.name))
+                seen_names.add(m.name)
+
+        return ModelListResponse(data=openai_models)
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+        request: ChatCompletionRequest,
+        background_tasks: BackgroundTasks,
+        api_key: str = Depends(verify_api_key)
+):
+    """OpenAI-compatible chat completions endpoint."""
+    start_time = datetime.now()
+    try:
+        # Resolve model
+        model = resolve_model(request.model, api_key)
+        if not model:
+            raise HTTPException(status_code=404, detail=f"Model '{request.model}' not found or access denied")
+
+        # Map OpenAI request to internal payload
+        payload = {
+            "model_name": model.name,
+            "model_id": model.id,
+            "messages": [m.model_dump() for m in request.messages],
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_tokens": request.max_tokens or 1024,
+            "stream": request.stream,
+            "stop": [request.stop] if isinstance(request.stop, str) else request.stop
+        }
+
+        if request.stream:
+            return StreamingResponse(
+                openai_stream_generator(model, payload, api_key, background_tasks, start_time),
+                media_type="text/event-stream"
+            )
+        else:
+            result = await model_manager.inference(model, payload)
+            if isinstance(result, dict) and "error" in result:
+                return JSONResponse(result, status_code=result.get("status_code", 500))
+
+            end_time = datetime.now()
+            prompt_tokens = result.get("prompt_tokens", 0)
+            generation_tokens = result.get("generation_tokens", 0)
+            peak_memory = result.get("peak_memory", 0.0)
+
+            background_tasks.add_task(
+                record_analytics, api_key, model.name, prompt_tokens, generation_tokens, peak_memory, start_time,
+                end_time
+            )
+
+            response = ChatCompletionResponse(
+                model=model.name,
+                choices=[
+                    ChatCompletionResponseChoice(
+                        index=0,
+                        message=ChatCompletionMessage(role="assistant", content=result.get("content", "")),
+                        finish_reason="stop"
+                    )
+                ],
+                usage=UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=generation_tokens,
+                    total_tokens=prompt_tokens + generation_tokens
+                )
+            )
+            return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"OpenAI Chat Completion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 5. INFERENCE LOGIC:
 # The `inference` endpoint is the heart of the service. 
 # It determines the model type (text, vision, audio), ensures the model is loaded 
 # via the ModelManager, and records detailed token usage analytics.
@@ -321,7 +518,7 @@ async def inference(request: InferenceRequest, background_tasks: BackgroundTasks
 
         if isinstance(result, JSONResponse):
             return result
-        
+
         # Handle streaming response
         # if request.stream:
         #     from fastapi.responses import StreamingResponse
